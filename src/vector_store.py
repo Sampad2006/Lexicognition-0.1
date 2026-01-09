@@ -22,7 +22,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.vectorstores.base import VectorStoreRetriever
 
 
-# Configure logging
+# Configure logging₹
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -392,7 +392,7 @@ if __name__ == "__main__":
     
     print(f"\nQuery: {query}")
     print(f"Retrieved {len(results)} relevant chunks:\n")
-    
+    store
     for i, doc in enumerate(results, 1):
         print(f"Result {i}:")
         print(f"  Page: {doc.metadata.get('page', 'Unknown')}")

@@ -283,7 +283,7 @@ if __name__ == "__main__":
         # Replace with your actual PDF path
         pdf_path = "attention.pdf"
         chunks = pipeline.ingest_pdf(pdf_path)
-        
+
         # Display statistics
         stats = pipeline.get_statistics(chunks)
         print("\n=== Ingestion Statistics ===")
