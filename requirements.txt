@@ -1,0 +1,14 @@
+# Core LangChain
+langchain==0.1.0
+langchain-community==0.0.10
+
+# PDF Processing
+pymupdf==1.23.8
+
+# Vector Database
+langchain-chroma==0.1.0
+chromadb==0.4.22
+
+# Embeddings
+langchain-huggingface==0.0.1
+sentence-transformers==2.3.1
