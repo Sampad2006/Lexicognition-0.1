@@ -1,26 +1,22 @@
 """
-Question Generator for PDF Interviewer
-=======================================
-This module generates interview questions from PDF content using LLMs.
+Robust Question Generator with JSON Schema Enforcement
+======================================================
+Fixes Error 2: Forces LLM to output valid, parseable JSON.
 
-Phase 3: Use retrieved chunks to generate conceptual interview questions
-
-Author: AI Assistant
-Date: 2026-01-09
+Author: Senior AI Engineer
+Date: 2026-01-16
 """
 
+import json
 import re
-import ast
-from typing import List, Optional, Union
+import random
+from typing import List, Dict, Any
 import logging
 
 from langchain_community.chat_models import ChatOllama
 from langchain.schema import HumanMessage, SystemMessage
 from langchain.vectorstores.base import VectorStoreRetriever
-from langchain_core.vectorstores import VectorStore
 
-
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -30,68 +26,39 @@ logger = logging.getLogger(__name__)
 
 class QuestionGenerator:
     """
-    Generates technical interview questions from PDF content using LLMs.
-    
-    This class:
-    1. Retrieves relevant chunks from the vector store
-    2. Constructs context for the LLM
-    3. Prompts the LLM to generate conceptual questions
-    4. Parses and validates the output
-    
-    Attributes:
-        llm: ChatOllama instance for question generation
-        model_name: Name of the Ollama model being used
-        temperature: Creativity parameter for generation
+    Generates technical interview questions with enforced JSON output.
     """
     
     def __init__(
         self,
         model_name: str = "llama3",
-        temperature: float = 0.7,
+        temperature: float = 0.9,
         base_url: str = "http://localhost:11434"
     ):
-        """
-        Initialize the Question Generator with an LLM.
-        
-        Args:
-            model_name: Ollama model to use (e.g., "llama3", "mistral", "llama2")
-                - llama3: Best quality, slower
-                - mistral: Good balance of speed and quality
-                - llama2: Faster, decent quality
-            temperature: Controls randomness in generation (0.0 to 1.0)
-                - 0.0: Deterministic, focused
-                - 0.7: Creative but coherent (recommended for questions)
-                - 1.0: Very creative, potentially inconsistent
-            base_url: URL for Ollama API endpoint
-        
-        Raises:
-            Exception: If Ollama is not running or model is not available
-        """
+        """Initialize the Question Generator with JSON-enforced LLM."""
         self.model_name = model_name
         self.temperature = temperature
         
         logger.info(f"Initializing QuestionGenerator with model: {model_name}")
-        logger.info(f"Temperature: {temperature}")
         
         try:
-            # Initialize ChatOllama
+            # Force JSON output mode
             self.llm = ChatOllama(
                 model=model_name,
                 temperature=temperature,
-                base_url=base_url
+                base_url=base_url,
+                format="json"  # ✅ KEY: Forces JSON output
             )
             
-            # Test the connection with a simple query
+            # Test connection
             logger.info("Testing LLM connection...")
-            test_response = self.llm.invoke([HumanMessage(content="Hi")])
+            test_response = self.llm.invoke([
+                HumanMessage(content='{"test": "connection"}')
+            ])
             logger.info("✓ LLM connection successful")
             
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {str(e)}")
-            logger.error(
-                f"Make sure Ollama is running: 'ollama serve' and "
-                f"the model '{model_name}' is installed: 'ollama pull {model_name}'"
-            )
             raise Exception(
                 f"Failed to initialize {model_name}. "
                 f"Is Ollama running? Error: {str(e)}"
@@ -100,33 +67,29 @@ class QuestionGenerator:
     def _retrieve_context_chunks(
         self,
         retriever: VectorStoreRetriever,
-        query: str = "Abstract introduction conclusion summary methodology results",
-        top_k: int = 5
+        num_questions: int = 5
     ) -> List[str]:
         """
-        Retrieve the most relevant chunks from the vector store.
-        
-        Strategy:
-        - Query for high-level content (abstract, intro, conclusion)
-        - These sections typically contain the main ideas
-        - Retrieve top-k chunks to get comprehensive coverage
-        
-        Args:
-            retriever: VectorStoreRetriever from Phase 2
-            query: Search query to find relevant content
-            top_k: Number of chunks to retrieve
-        
-        Returns:
-            List of text chunks
+        Retrieve relevant chunks with randomization for variety.
         """
-        logger.info(f"Retrieving top {top_k} chunks for question generation...")
-        logger.info(f"Query: '{query}'")
+        # Multiple diverse query strategies
+        query_strategies = [
+            "Abstract introduction main contributions key findings",
+            "Methodology architecture design decisions implementation",
+            "Results experiments evaluation performance analysis",
+            "Conclusion future work limitations discussion",
+            "Background related work motivation problem statement",
+            "Technical details algorithms mathematical formulation",
+            "Trade-offs comparisons advantages disadvantages"
+        ]
+        
+        query = random.choice(query_strategies)
+        top_k = random.randint(4, 7)
+        
+        logger.info(f"Retrieving top {top_k} chunks with query: '{query[:50]}...'")
         
         try:
-            # Override retriever's k parameter for this specific query
             retriever.search_kwargs = {"k": top_k}
-            
-            # Retrieve documents (use invoke instead of deprecated method)
             docs = retriever.invoke(query)
             
             if not docs:
@@ -135,16 +98,10 @@ class QuestionGenerator:
             
             logger.info(f"✓ Retrieved {len(docs)} chunks")
             
-            # Extract text content
+            # Shuffle for variety
+            random.shuffle(docs)
+            
             chunks = [doc.page_content for doc in docs]
-            
-            # Log metadata for debugging
-            for i, doc in enumerate(docs, 1):
-                logger.debug(
-                    f"  Chunk {i}: Page {doc.metadata.get('page', '?')}, "
-                    f"Size: {len(doc.page_content)} chars"
-                )
-            
             return chunks
             
         except Exception as e:
@@ -152,329 +109,351 @@ class QuestionGenerator:
             raise
     
     def _construct_context(self, chunks: List[str]) -> str:
-        """
-        Combine retrieved chunks into a single context string.
-        
-        Args:
-            chunks: List of text chunks
-        
-        Returns:
-            Combined context string with separators
-        """
+        """Combine retrieved chunks into a single context string."""
         if not chunks:
             return ""
         
-        # Combine chunks with clear separators
         context = "\n\n--- SECTION ---\n\n".join(chunks)
-        
         logger.info(f"Constructed context: {len(context)} characters")
         return context
     
-    def _create_prompt(self, context: str, num_questions: int = 5) -> List:
+    def _create_json_prompt(self, context: str, num_questions: int = 5) -> List:
         """
-        Create the LLM prompt for question generation.
-        
-        Args:
-            context: Combined text from retrieved chunks
-            num_questions: Number of questions to generate
-        
-        Returns:
-            List of messages for the LLM
+        ✅ UPDATED SYSTEM PROMPT: Enforces strict JSON schema.
         """
-        system_message = SystemMessage(content="""You are an expert technical interviewer specializing in evaluating deep understanding of research papers and technical concepts.
+        system_message = SystemMessage(content="""You are an expert technical interviewer specializing in evaluating deep understanding of research papers.
 
-Your role is to generate challenging, thought-provoking interview questions that:
-1. Test conceptual understanding, not memorization
-2. Focus on methodology, architectural choices, and design decisions
-3. Require synthesis and critical thinking
-4. Probe the "why" behind technical choices
+Your task is to generate challenging, conceptual interview questions that test:
+- Methodology and architectural design decisions
+- Trade-offs and technical choices
+- Deep understanding (not memorization)
+- Critical thinking and synthesis
 
-DO NOT ask simple definition questions or surface-level queries.""")
+You MUST output ONLY valid JSON. No markdown, no code blocks, no preamble.""")
         
-        human_message = HumanMessage(content=f"""Based on the following research paper excerpt, generate {num_questions} hard, conceptual interview questions.
+        human_message = HumanMessage(content=f"""Based on the following research paper excerpt, generate EXACTLY {num_questions} challenging technical interview questions.
 
 RESEARCH PAPER EXCERPT:
 {context}
 
 REQUIREMENTS:
-- Focus on methodology, architecture, and key innovations
-- Ask about trade-offs and design decisions
-- Questions should require deep understanding to answer
-- Avoid simple "what is X?" definitions
-- Make questions specific to this paper's contributions
+1. Focus on methodology, architecture, and design decisions
+2. Ask about trade-offs and "why" questions
+3. Require deep understanding to answer
+4. Avoid simple definition questions
+5. Make questions specific to this paper's contributions
+6. Each question must end with a question mark
 
-OUTPUT FORMAT:
-Provide your response as a valid Python list of strings. Each string is one question.
-Example format:
-["Question 1 here?", "Question 2 here?", "Question 3 here?"]
+JSON SCHEMA (YOU MUST FOLLOW THIS EXACTLY):
+{{
+  "questions": [
+    "Question 1 text here?",
+    "Question 2 text here?",
+    "Question 3 text here?"
+  ]
+}}
 
-IMPORTANT: Output ONLY the Python list, nothing else. No markdown, no explanations, no preamble.""")
+OUTPUT REQUIREMENTS:
+- Output ONLY the JSON object above
+- No markdown code blocks (no ```)
+- No preamble or explanation
+- Start your response with {{ and end with }}
+- The "questions" array must contain exactly {num_questions} strings
+- Each string must be a complete question ending with ?
+
+Generate the JSON now:""")
         
         return [system_message, human_message]
     
-    def _parse_questions(self, llm_output: str) -> List[str]:
+    def _robust_json_parser(self, llm_output: str, expected_count: int) -> List[str]:
         """
-        Parse the LLM output to extract a list of questions.
+        ✅ DEFENSIVE JSON PARSER: Extracts JSON even with preamble text.
         
-        Handles various output formats:
-        - Clean Python list: ["Q1", "Q2"]
-        - Markdown code blocks: ```python [...] ```
-        - Numbered lists: 1. Q1\n2. Q2
-        - JSON format: {"questions": [...]}
-        
-        Args:
-            llm_output: Raw output from the LLM
-        
-        Returns:
-            List of question strings
-        
-        Raises:
-            ValueError: If output cannot be parsed
+        Handles multiple failure modes:
+        1. Markdown code blocks
+        2. Preamble text before JSON
+        3. Trailing text after JSON
+        4. Malformed JSON
+        5. Missing fields
         """
-        logger.info("Parsing LLM output...")
+        logger.info("Parsing LLM output with robust JSON parser...")
+        logger.debug(f"Raw output (first 500 chars):\n{llm_output}")
         
-        # Remove markdown code blocks if present
-        cleaned = re.sub(r'```(?:python|json)?\s*', '', llm_output)
+        # Step 1: Remove markdown code blocks
+        cleaned = re.sub(r'```(?:json)?\s*', '', llm_output)
         cleaned = re.sub(r'```', '', cleaned)
         cleaned = cleaned.strip()
         
-        # Try 1: Direct Python list parsing
+        # Step 2: Extract JSON object (find first { to last })
+        json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        
+        if not json_match:
+            logger.error("No JSON object found in output")
+            raise ValueError(
+                f"Could not find JSON object in LLM output. "
+                f"Output: {llm_output[:500]}"
+            )
+        
+        json_str = json_match.group(0)
+        logger.debug(f"Extracted JSON string: {json_str[:200]}...")
+        
+        # Step 3: Parse JSON
         try:
-            questions = ast.literal_eval(cleaned)
-            if isinstance(questions, list) and all(isinstance(q, str) for q in questions):
-                logger.info(f"✓ Successfully parsed {len(questions)} questions (Python list)")
-                return questions
-        except (ValueError, SyntaxError):
-            logger.debug("Not a valid Python list, trying other methods...")
-        
-        # Try 2: Extract list from larger text (find [...])
-        list_match = re.search(r'\[.*\]', cleaned, re.DOTALL)
-        if list_match:
+            data = json.loads(json_str)
+            logger.info("✓ Successfully parsed JSON")
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error: {e}")
+            
+            # Attempt to fix common JSON issues
+            json_str = self._fix_json_formatting(json_str)
+            
             try:
-                questions = ast.literal_eval(list_match.group(0))
-                if isinstance(questions, list):
-                    logger.info(f"✓ Successfully parsed {len(questions)} questions (extracted list)")
-                    return questions
-            except (ValueError, SyntaxError):
-                pass
+                data = json.loads(json_str)
+                logger.info("✓ Successfully parsed JSON after fixes")
+            except json.JSONDecodeError as e2:
+                logger.error(f"JSON still invalid after fixes: {e2}")
+                raise ValueError(
+                    f"Could not parse JSON even after fixes. "
+                    f"Original error: {e}, Fixed error: {e2}"
+                )
         
-        # Try 3: Parse numbered list format
-        numbered_pattern = r'^\s*\d+[\.)]\s*(.+?)(?=\n\s*\d+[\.)]|\Z)'
-        numbered_matches = re.findall(numbered_pattern, cleaned, re.MULTILINE | re.DOTALL)
-        if numbered_matches:
-            questions = [q.strip() for q in numbered_matches]
-            logger.info(f"✓ Successfully parsed {len(questions)} questions (numbered list)")
-            return questions
+        # Step 4: Validate schema
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected JSON object, got {type(data)}")
         
-        # Try 4: Split by newlines (last resort)
-        lines = [line.strip() for line in cleaned.split('\n') if line.strip()]
-        if lines:
-            logger.warning("Using fallback: splitting by newlines")
-            return lines
+        if "questions" not in data:
+            logger.error(f"Missing 'questions' field. Keys found: {list(data.keys())}")
+            raise ValueError("JSON object missing 'questions' field")
         
-        # If all parsing fails
-        logger.error("Failed to parse questions from LLM output")
-        raise ValueError(
-            f"Could not parse questions from LLM output. "
-            f"Output received:\n{llm_output[:500]}..."
-        )
+        questions = data["questions"]
+        
+        if not isinstance(questions, list):
+            raise ValueError(f"'questions' must be an array, got {type(questions)}")
+        
+        # Step 5: Validate and clean questions
+        valid_questions = self._validate_questions(questions)
+        
+        if not valid_questions:
+            raise ValueError("No valid questions found in JSON output")
+        
+        # Step 6: Check count
+        if len(valid_questions) < expected_count:
+            logger.warning(
+                f"Expected {expected_count} questions but only got {len(valid_questions)}"
+            )
+        elif len(valid_questions) > expected_count:
+            logger.info(f"Got {len(valid_questions)} questions, trimming to {expected_count}")
+            valid_questions = valid_questions[:expected_count]
+        
+        logger.info(f"✓ Successfully extracted {len(valid_questions)} valid questions")
+        
+        return valid_questions
+    
+    def _fix_json_formatting(self, json_str: str) -> str:
+        """
+        Attempt to fix common JSON formatting issues.
+        """
+        logger.info("Attempting to fix JSON formatting...")
+        
+        # Fix single quotes to double quotes
+        json_str = json_str.replace("'", '"')
+        
+        # Fix trailing commas
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        
+        # Fix unescaped quotes in strings (basic attempt)
+        # This is tricky and not perfect, but handles simple cases
+        
+        return json_str
+    
+    def _validate_questions(self, questions: List[Any]) -> List[str]:
+        """
+        Validate and clean extracted questions.
+        
+        Returns only valid questions that meet quality criteria.
+        """
+        valid = []
+        
+        for idx, q in enumerate(questions):
+            # Must be a string
+            if not isinstance(q, str):
+                logger.warning(f"Question {idx+1} is not a string: {type(q)}")
+                continue
+            
+            q = q.strip()
+            
+            # Length check
+            if len(q) < 20:
+                logger.warning(f"Question {idx+1} too short: {len(q)} chars")
+                continue
+            
+            if len(q) > 500:
+                logger.warning(f"Question {idx+1} too long: {len(q)} chars")
+                continue
+            
+            # Must contain a question mark
+            if '?' not in q:
+                logger.warning(f"Question {idx+1} missing question mark")
+                continue
+            
+            # Ensure it ends with ?
+            if not q.endswith('?'):
+                if '?' in q:
+                    # Truncate at last question mark
+                    q = q[:q.rindex('?')+1]
+                else:
+                    continue
+            
+            # Remove any leftover quotes from the edges
+            q = q.strip('"\'')
+            
+            valid.append(q)
+        
+        return valid
     
     def generate_questions(
         self,
         retriever: VectorStoreRetriever,
         num_questions: int = 5,
-        retrieval_query: Optional[str] = None
+        max_retries: int = 3
     ) -> List[str]:
         """
-        Generate interview questions from PDF content.
-        
-        This is the main entry point for Phase 3:
-        1. Retrieve relevant chunks from vector store
-        2. Construct context for LLM
-        3. Generate questions using LLM
-        4. Parse and return questions
+        Generate interview questions with retry logic.
         
         Args:
-            retriever: VectorStoreRetriever from Phase 2
+            retriever: VectorStoreRetriever for context
             num_questions: Number of questions to generate
-            retrieval_query: Custom query for chunk retrieval
-                (default: searches for abstract/intro/conclusion)
+            max_retries: Maximum retry attempts if parsing fails
         
         Returns:
-            List of generated question strings
-        
-        Raises:
-            Exception: If question generation fails
-            
-        Example:
-            >>> generator = QuestionGenerator(model_name="llama3")
-            >>> questions = generator.generate_questions(retriever)
-            >>> for i, q in enumerate(questions, 1):
-            >>>     print(f"{i}. {q}")
+            List of validated question strings
         """
         logger.info(f"Starting question generation (target: {num_questions} questions)...")
         
-        try:
-            # Step 1: Retrieve context chunks
-            if retrieval_query is None:
-                retrieval_query = "Abstract introduction conclusion summary methodology results"
-            
-            chunks = self._retrieve_context_chunks(
-                retriever=retriever,
-                query=retrieval_query,
-                top_k=5  # Get top 5 chunks for broad coverage
-            )
-            
-            if not chunks:
-                raise ValueError("No chunks retrieved from vector store")
-            
-            # Step 2: Construct context
-            context = self._construct_context(chunks)
-            
-            # Step 3: Create prompt
-            messages = self._create_prompt(context, num_questions)
-            
-            # Step 4: Generate questions
-            logger.info("Calling LLM to generate questions...")
-            response = self.llm.invoke(messages)
-            
-            # Extract content from response
-            if hasattr(response, 'content'):
-                llm_output = response.content
-            else:
-                llm_output = str(response)
-            
-            logger.debug(f"Raw LLM output:\n{llm_output[:500]}...")
-            
-            # Step 5: Parse questions
-            questions = self._parse_questions(llm_output)
-            
-            # Validate we got questions
-            if not questions:
-                raise ValueError("No questions extracted from LLM output")
-            
-            logger.info(f"✓ Successfully generated {len(questions)} questions")
-            
-            # Log questions for review
-            for i, q in enumerate(questions, 1):
-                logger.info(f"  Q{i}: {q[:80]}...")
-            
-            return questions
-            
-        except Exception as e:
-            logger.error(f"Question generation failed: {str(e)}")
-            raise Exception(f"Failed to generate questions: {str(e)}") from e
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Attempt {attempt}/{max_retries}")
+                
+                # Step 1: Retrieve context
+                chunks = self._retrieve_context_chunks(
+                    retriever=retriever,
+                    num_questions=num_questions
+                )
+                
+                if not chunks:
+                    raise ValueError("No chunks retrieved from vector store")
+                
+                # Step 2: Construct context
+                context = self._construct_context(chunks)
+                
+                # Step 3: Create JSON-enforced prompt
+                messages = self._create_json_prompt(context, num_questions)
+                
+                # Step 4: Generate questions
+                logger.info("Calling LLM to generate questions...")
+                response = self.llm.invoke(messages)
+                
+                # Extract content
+                if hasattr(response, 'content'):
+                    llm_output = response.content
+                else:
+                    llm_output = str(response)
+                
+                # Step 5: Parse JSON robustly
+                questions = self._robust_json_parser(llm_output, num_questions)
+                
+                # Success!
+                logger.info(f"✓ Successfully generated {len(questions)} questions")
+                
+                # Log questions
+                for i, q in enumerate(questions, 1):
+                    logger.info(f"  Q{i}: {q[:80]}...")
+                
+                return questions
+                
+            except Exception as e:
+                logger.error(f"Attempt {attempt} failed: {str(e)}")
+                
+                if attempt == max_retries:
+                    logger.error("All retry attempts exhausted")
+                    raise Exception(
+                        f"Failed to generate questions after {max_retries} attempts. "
+                        f"Last error: {str(e)}"
+                    ) from e
+                else:
+                    logger.info(f"Retrying... ({attempt + 1}/{max_retries})")
+                    continue
     
     def regenerate_question(
         self,
         retriever: VectorStoreRetriever,
         question_context: str
     ) -> str:
-        """
-        Generate a single follow-up question based on a specific context.
-        
-        Useful for:
-        - Generating follow-up questions during an interview
-        - Drilling deeper into specific topics
-        
-        Args:
-            retriever: VectorStoreRetriever
-            question_context: Context or topic for the question
-        
-        Returns:
-            Single generated question
-        """
+        """Generate a single follow-up question."""
         logger.info(f"Generating single question for context: '{question_context[:50]}...'")
         
-        # Retrieve relevant chunks for this specific context
-        chunks = self._retrieve_context_chunks(
-            retriever=retriever,
-            query=question_context,
-            top_k=3
-        )
-        
+        chunks = self._retrieve_context_chunks(retriever=retriever, num_questions=1)
         context = self._construct_context(chunks)
         
-        # Simplified prompt for single question
-        prompt = f"""Based on this excerpt: {context}
+        prompt = f"""Generate ONE challenging follow-up question about: {question_context}
 
-Generate ONE challenging follow-up question about: {question_context}
+Context: {context}
 
-Output only the question, nothing else."""
+Output JSON format:
+{{"question": "Your question here?"}}
+
+Output only the JSON:"""
         
         response = self.llm.invoke([HumanMessage(content=prompt)])
-        question = response.content.strip()
         
-        logger.info(f"✓ Generated question: {question[:80]}...")
-        return question
+        try:
+            data = json.loads(response.content)
+            question = data.get("question", "").strip()
+            
+            if not question:
+                raise ValueError("Empty question in JSON response")
+            
+            logger.info(f"✓ Generated question: {question[:80]}...")
+            return question
+            
+        except Exception as e:
+            logger.error(f"Failed to parse single question: {e}")
+            # Fallback: return raw content
+            return response.content.strip()
 
 
-# Example usage and testing
+# Test function
 if __name__ == "__main__":
-    """
-    Test the QuestionGenerator with a complete pipeline.
+    print("=== Testing Robust JSON Parser ===\n")
     
-    Prerequisites:
-    1. Ollama is running: `ollama serve`
-    2. Model is installed: `ollama pull llama3` (or mistral)
-    3. Vector store exists from Phase 2
-    """
+    # Test cases for the parser
+    test_cases = [
+        # Case 1: Clean JSON
+        '''{"questions": ["Q1?", "Q2?", "Q3?"]}''',
+        
+        # Case 2: JSON with preamble
+        '''Here are the questions:
+        {"questions": ["Q1?", "Q2?", "Q3?"]}''',
+        
+        # Case 3: JSON with markdown
+        '''```json
+        {"questions": ["Q1?", "Q2?", "Q3?"]}
+        ```''',
+        
+        # Case 4: JSON with trailing text
+        '''{"questions": ["Q1?", "Q2?", "Q3?"]}
+        
+        These questions test understanding.''',
+    ]
     
-    print("=== Phase 3: Question Generation Test ===\n")
+    generator = QuestionGenerator()
     
-    # Check Ollama availability
-    print("Checking Ollama setup...")
-    print("Make sure Ollama is running: 'ollama serve'")
-    print("Available models: 'ollama list'\n")
-    
-    try:
-        # Import Phase 2 components
-        from src.vector_store import VectorStoreManager
-        
-        # Load existing vector store
-        print("Loading vector store from Phase 2...")
-        manager = VectorStoreManager(persist_directory="./chroma_db")
-        retriever = manager.load_existing_store(k=5)
-        print("✓ Vector store loaded\n")
-        
-        # Initialize Question Generator
-        print("Initializing Question Generator...")
-        generator = QuestionGenerator(
-            model_name="llama3",  # Change to "mistral" if you don't have llama3
-            temperature=0.7
-        )
-        print("✓ LLM initialized\n")
-        
-        # Generate questions
-        print("Generating interview questions...")
-        print("(This may take 30-60 seconds depending on your hardware)\n")
-        
-        questions = generator.generate_questions(
-            retriever=retriever,
-            num_questions=5
-        )
-        
-        # Display results
-        print("\n" + "="*60)
-        print("GENERATED INTERVIEW QUESTIONS")
-        print("="*60 + "\n")
-        
-        for i, question in enumerate(questions, 1):
-            print(f"Question {i}:")
-            print(f"{question}")
-            print()
-        
-        print("="*60)
-        print("✓ Question generation complete!")
-        
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        print("\nPlease run Phase 2 first to create the vector store:")
-        print("  python main.py")
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        print("\nTroubleshooting:")
-        print("1. Is Ollama running? Run: ollama serve")
-        print("2. Is the model installed? Run: ollama pull llama3")
-        print("3. Check Ollama logs for errors")
+    for i, test_input in enumerate(test_cases, 1):
+        print(f"\n--- Test Case {i} ---")
+        print(f"Input: {test_input[:100]}...")
+        try:
+            result = generator._robust_json_parser(test_input, expected_count=3)
+            print(f"✓ Success: {result}")
+        except Exception as e:
+            print(f"✗ Failed: {e}")

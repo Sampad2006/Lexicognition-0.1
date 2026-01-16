@@ -1,151 +1,407 @@
 """
-Answer Grader for PDF Interviewer
-==================================
-This module provides the AnswerGrader class, which evaluates a user's answer
-to a generated question against the context of the source PDF document.
+Strict Answer Evaluator with Anti-Cheat Logic
+==============================================
+Prevents "cheating" by detecting question repetition and enforcing
+grading based on factual accuracy from source context.
 
-Phase 4: Grade the user's answer based on retrieved context.
-
-Author: AI Assistant
-Date: 2026-01-09
+Author: Senior AI Engineer
+Date: 2026-01-16
 """
 
+import json
+import re
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from langchain_community.chat_models import ChatOllama
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
+from langchain.schema import HumanMessage, SystemMessage
 from langchain_core.vectorstores import VectorStoreRetriever
-from langchain_core.pydantic_v1 import BaseModel, Field
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
-class GraderResponse(BaseModel):
-    """Pydantic model for the structured output of the grader."""
-    score: int = Field(description="The score from 0 to 10 for the user's answer.")
-    feedback: str = Field(description="Constructive feedback for the user.")
-    correct_answer_summary: str = Field(description="A summary of the correct answer based on the context.")
-
-
-class AnswerGrader:
+class StrictAnswerGrader:
     """
-    Grades a user's answer to a question based on retrieved document chunks.
+    Strict technical interviewer that prevents cheating.
+    
+    Anti-cheat measures:
+    1. Detects if user answer is just repeating the question
+    2. Checks for contradictions against source context
+    3. Grades based ONLY on factual accuracy from context
+    4. Uses JSON output for reliable parsing
     """
-    def __init__(self, model_name: str = "llama3", temperature: float = 0.0):
+    
+    def __init__(
+        self,
+        model_name: str = "llama3",
+        temperature: float = 0.0,  # Low temp for consistent grading
+        base_url: str = "http://localhost:11434"
+    ):
         """
-        Initializes the AnswerGrader.
+        Initialize the Strict Grader.
+        
         Args:
-            model_name (str): The name of the Ollama model to use.
-            temperature (float): The temperature for the LLM.
+            model_name: Ollama model to use
+            temperature: 0.0 for deterministic grading
+            base_url: Ollama API endpoint
         """
-        self.llm = ChatOllama(model=model_name, temperature=temperature, format="json")
-        self.parser = JsonOutputParser(pydantic_object=GraderResponse)
-        self.prompt = self._create_prompt()
-
-    def _create_prompt(self) -> PromptTemplate:
-        """
-        Creates the prompt template for the grader.
-        """
-        template = """You are a strict technical interviewer. Your task is to evaluate a student's answer based on the provided context from a research paper.
-
-        **Context from the Paper:**
-        {context}
-
-        **Question:**
-        {question}
-
-        **Student's Answer:**
-        {answer}
-
-        **Instructions:**
-        1. Compare the "Student's Answer" to the "Context from the Paper".
-        2. Assign a score from 0 (completely wrong) to 10 (perfectly correct and comprehensive).
-        3. Provide concise, constructive feedback.
-        4. Summarize the correct answer based *only* on the provided context.
-        5. Output a JSON object with the following keys: 'score', 'feedback', 'correct_answer_summary'.
-
-        {format_instructions}
-        """
-        return PromptTemplate(
-            template=template,
-            input_variables=["context", "question", "answer"],
-            partial_variables={"format_instructions": self.parser.get_format_instructions()},
-        )
-
-    def grade_answer(self, question: str, user_answer: str, retriever: VectorStoreRetriever) -> Dict[str, Any]:
-        """
-        Grades the user's answer.
-        Args:
-            question (str): The question that was asked.
-            user_answer (str): The user's answer.
-            retriever (VectorStoreRetriever): The retriever to get the context from.
-        Returns:
-            A dictionary containing the score, feedback, and correct answer summary.
-        """
+        self.model_name = model_name
+        self.temperature = temperature
+        
+        logger.info(f"Initializing StrictAnswerGrader with model: {model_name}")
+        
         try:
-            # 1. Retrieve context
-            docs = retriever.invoke(question)
-            context = "\n\n".join([doc.page_content for doc in docs])
-
-            # 2. Construct the chain
-            chain = self.prompt | self.llm | self.parser
-
-            # 3. Invoke the chain
-            result = chain.invoke({
-                "context": context,
-                "question": question,
-                "answer": user_answer
-            })
+            # Force JSON output mode
+            self.llm = ChatOllama(
+                model=model_name,
+                temperature=temperature,
+                base_url=base_url,
+                format="json"  # ✅ Enforces JSON output
+            )
             
-            # Add evidence to the result
-            result['evidence'] = [{'page': doc.metadata.get('page'), 'content': doc.page_content[:250] + '...'} for doc in docs]
+            logger.info("✓ Grader initialized successfully")
             
-            return result
-
         except Exception as e:
-            logger.error(f"Error grading answer: {e}")
-            return {
-                "score": -1,
-                "feedback": "Error parsing the LLM response. Please try again.",
-                "correct_answer_summary": "Could not be generated due to an error.",
-                "evidence": []
-            }
+            logger.error(f"Failed to initialize grader: {str(e)}")
+            raise
+    
+    def _create_strict_grading_prompt(
+        self,
+        question: str,
+        user_answer: str,
+        context: str
+    ) -> list:
+        """
+        ✅ YOUR SPECIFIED PROMPT TEMPLATE with strict anti-cheat rules.
+        """
+        system_message = SystemMessage(content="""You are a strict technical interviewer and professor. 
+
+Your job is to grade student answers with zero tolerance for cheating or low-effort responses.
+
+You MUST output ONLY valid JSON. No markdown, no preamble, no code blocks.""")
+        
+        human_message = HumanMessage(content=f"""You are a strict technical interviewer.
+
+CONTEXT FROM PDF:
+{context}
+
+QUESTION:
+{question}
+
+USER ANSWER:
+{user_answer}
+
+GRADING RULES (ENFORCE STRICTLY):
+1. If the User Answer is a repetition or paraphrase of the Question with no new information, grade it 0/10. 
+   Example: If question is "What is attention mechanism?" and answer is "Attention mechanism is what the question asks", that's 0/10.
+
+2. If the User Answer contradicts the Context, grade it 0/10.
+   Example: If context says "model uses 8 attention heads" but answer says "uses 16 heads", that's 0/10.
+
+3. Grade based on factual accuracy derived ONLY from the Context provided.
+   - Do not give credit for generic knowledge not in the Context
+   - Do not give credit for partially correct information
+   - The answer must demonstrate understanding of the specific content in the Context
+
+4. An empty, nonsense, or completely irrelevant answer gets 0/10.
+
+5. A perfect answer (10/10) must:
+   - Address the question directly
+   - Include specific facts from the Context
+   - Demonstrate deep understanding
+   - Be accurate and comprehensive
+
+SCORING RUBRIC:
+- 0/10: Question repetition, contradiction, nonsense, or completely wrong
+- 1-3/10: Vague or mostly incorrect, missing key information
+- 4-6/10: Partially correct but incomplete or imprecise
+- 7-8/10: Mostly correct with minor gaps
+- 9-10/10: Excellent, comprehensive, and accurate
+
+JSON SCHEMA (YOU MUST FOLLOW THIS EXACTLY):
+{{
+  "score": <integer from 0 to 10>,
+  "feedback": "<constructive feedback explaining the grade>",
+  "reasoning": "<detailed reasoning for the score, referencing specific issues or strengths>",
+  "is_question_repetition": <boolean, true if answer just repeats question>,
+  "contradicts_context": <boolean, true if answer contradicts the context>
+}}
+
+OUTPUT REQUIREMENTS:
+- Output ONLY the JSON object above
+- No markdown code blocks (no ```)
+- No preamble or explanation
+- Start your response with {{ and end with }}
+- All string values must be properly escaped
+- The score must be an integer from 0 to 10
+
+Grade the answer now:""")
+        
+        return [system_message, human_message]
+    
+    def _robust_json_parser(self, llm_output: str) -> Dict[str, Any]:
+        """
+        Defensive JSON parser for grading output.
+        
+        Returns:
+            Dictionary with keys: score, feedback, reasoning, 
+            is_question_repetition, contradicts_context
+        """
+        logger.info("Parsing grading output...")
+        logger.debug(f"Raw output: {llm_output[:300]}...")
+        
+        # Remove markdown code blocks
+        cleaned = re.sub(r'```(?:json)?\s*', '', llm_output)
+        cleaned = re.sub(r'```', '', cleaned)
+        cleaned = cleaned.strip()
+        
+        # Extract JSON object
+        json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        
+        if not json_match:
+            logger.error("No JSON object found in grading output")
+            return self._fallback_grading_response(
+                "Error: Could not parse grading response"
+            )
+        
+        json_str = json_match.group(0)
+        
+        # Parse JSON
+        try:
+            data = json.loads(json_str)
+            logger.info("✓ Successfully parsed grading JSON")
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error: {e}")
+            
+            # Attempt to fix
+            json_str = self._fix_json_formatting(json_str)
+            
+            try:
+                data = json.loads(json_str)
+                logger.info("✓ Successfully parsed JSON after fixes")
+            except json.JSONDecodeError as e2:
+                logger.error(f"JSON still invalid: {e2}")
+                return self._fallback_grading_response(
+                    f"Error: Could not parse grading JSON. {str(e2)}"
+                )
+        
+        # Validate schema
+        required_fields = ['score', 'feedback', 'reasoning']
+        for field in required_fields:
+            if field not in data:
+                logger.error(f"Missing required field: {field}")
+                return self._fallback_grading_response(
+                    f"Error: Missing required field '{field}'"
+                )
+        
+        # Validate score range
+        if not isinstance(data['score'], int) or not (0 <= data['score'] <= 10):
+            logger.error(f"Invalid score: {data.get('score')}")
+            data['score'] = 0
+        
+        # Ensure boolean flags exist
+        data.setdefault('is_question_repetition', False)
+        data.setdefault('contradicts_context', False)
+        
+        logger.info(f"✓ Grading result: {data['score']}/10")
+        
+        return data
+    
+    def _fix_json_formatting(self, json_str: str) -> str:
+        """Attempt to fix common JSON formatting issues."""
+        # Fix single quotes to double quotes
+        json_str = json_str.replace("'", '"')
+        
+        # Fix trailing commas
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        
+        return json_str
+    
+    def _fallback_grading_response(self, error_message: str) -> Dict[str, Any]:
+        """
+        Return a fallback response when parsing fails.
+        """
+        return {
+            "score": 0,
+            "feedback": "Error evaluating answer. Please try again.",
+            "reasoning": error_message,
+            "is_question_repetition": False,
+            "contradicts_context": False,
+            "error": True
+        }
+    
+    def grade_answer(
+        self,
+        question: str,
+        user_answer: str,
+        retriever: VectorStoreRetriever,
+        max_retries: int = 2
+    ) -> Dict[str, Any]:
+        """
+        Grade a user's answer with strict anti-cheat measures.
+        
+        Args:
+            question: The interview question asked
+            user_answer: The user's submitted answer
+            retriever: VectorStoreRetriever to get ground truth context
+            max_retries: Number of retry attempts if parsing fails
+        
+        Returns:
+            Dictionary containing:
+                - score: int (0-10)
+                - feedback: str (constructive feedback)
+                - reasoning: str (detailed reasoning)
+                - is_question_repetition: bool
+                - contradicts_context: bool
+                - evidence: list (source chunks used)
+        """
+        logger.info("="*60)
+        logger.info("Starting strict answer grading...")
+        logger.info(f"Question: {question[:80]}...")
+        logger.info(f"User answer: {user_answer[:80]}...")
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Grading attempt {attempt}/{max_retries}")
+                
+                # Step 1: Retrieve ground truth context
+                logger.info("Retrieving context from source document...")
+                docs = retriever.invoke(question)
+                
+                if not docs:
+                    logger.warning("No context retrieved!")
+                    return {
+                        "score": 0,
+                        "feedback": "Unable to retrieve context for grading.",
+                        "reasoning": "No source material available to verify answer.",
+                        "is_question_repetition": False,
+                        "contradicts_context": False,
+                        "evidence": []
+                    }
+                
+                context = "\n\n".join([doc.page_content for doc in docs])
+                logger.info(f"Context retrieved: {len(context)} characters")
+                
+                # Step 2: Create strict grading prompt
+                messages = self._create_strict_grading_prompt(
+                    question=question,
+                    user_answer=user_answer,
+                    context=context
+                )
+                
+                # Step 3: Invoke LLM grader
+                logger.info("Calling LLM for grading...")
+                response = self.llm.invoke(messages)
+                
+                if hasattr(response, 'content'):
+                    llm_output = response.content
+                else:
+                    llm_output = str(response)
+                
+                # Step 4: Parse grading result
+                result = self._robust_json_parser(llm_output)
+                
+                # Step 5: Add evidence (source chunks)
+                result['evidence'] = [
+                    {
+                        'page': doc.metadata.get('page', 'N/A'),
+                        'content': doc.page_content[:250] + '...'
+                    }
+                    for doc in docs
+                ]
+                
+                # Log result
+                logger.info("="*60)
+                logger.info("GRADING COMPLETE")
+                logger.info(f"Score: {result['score']}/10")
+                logger.info(f"Question repetition detected: {result.get('is_question_repetition', False)}")
+                logger.info(f"Contradicts context: {result.get('contradicts_context', False)}")
+                logger.info("="*60)
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Grading attempt {attempt} failed: {str(e)}")
+                
+                if attempt == max_retries:
+                    logger.error("All grading retry attempts exhausted")
+                    return self._fallback_grading_response(
+                        f"Error after {max_retries} attempts: {str(e)}"
+                    )
+                else:
+                    logger.info(f"Retrying... ({attempt + 1}/{max_retries})")
+                    continue
 
 
-if __name__ == '__main__':
-    # This is a dummy setup for testing the AnswerGrader
+# Test function
+if __name__ == "__main__":
     from langchain.schema import Document
     from unittest.mock import MagicMock
-
-    # 1. Mock a retriever
+    
+    print("=== Testing Strict Answer Grader ===\n")
+    
+    # Mock retriever
     mock_retriever = MagicMock(spec=VectorStoreRetriever)
     mock_docs = [
-        Document(page_content="The sky is blue because of Rayleigh scattering.", metadata={"page": 1}),
-        Document(page_content="Water is a liquid at room temperature.", metadata={"page": 2}),
+        Document(
+            page_content="The Transformer uses multi-head attention with 8 parallel attention heads. This allows the model to jointly attend to information from different representation subspaces.",
+            metadata={"page": 1}
+        ),
+        Document(
+            page_content="The model architecture uses positional encodings based on sine and cosine functions of different frequencies.",
+            metadata={"page": 2}
+        ),
     ]
     mock_retriever.invoke.return_value = mock_docs
-
-    # 2. Create a grader instance
-    grader = AnswerGrader(model_name="llama3")
-
-    # 3. Define a question and a user answer
-    test_question = "Why is the sky blue?"
-    test_answer = "Because of Rayleigh scattering, which scatters blue light more than other colors."
-
-    # 4. Grade the answer
-    grade_result = grader.grade_answer(test_question, test_answer, mock_retriever)
-
-    # 5. Print the result
-    print("--- Grading Result ---")
-    print(f"Score: {grade_result.get('score')}")
-    print(f"Feedback: {grade_result.get('feedback')}")
-    print(f"Correct Answer Summary: {grade_result.get('correct_answer_summary')}")
-    print("--- Evidence ---")
-    if grade_result.get('evidence'):
-        for evi in grade_result.get('evidence'):
-            print(f"Page {evi['page']}: {evi['content']}")
-    print("----------------------")
+    
+    # Initialize grader
+    grader = StrictAnswerGrader(model_name="llama3")
+    
+    # Test cases
+    test_cases = [
+        {
+            "name": "Question Repetition (Should get 0)",
+            "question": "How many attention heads does the Transformer use?",
+            "answer": "The Transformer uses attention heads as the question asks."
+        },
+        {
+            "name": "Contradiction (Should get 0)",
+            "question": "How many attention heads does the Transformer use?",
+            "answer": "The Transformer uses 16 attention heads."
+        },
+        {
+            "name": "Correct Answer (Should get 8-10)",
+            "question": "How many attention heads does the Transformer use?",
+            "answer": "The Transformer uses 8 parallel attention heads, which allows it to jointly attend to information from different representation subspaces."
+        },
+        {
+            "name": "Nonsense (Should get 0)",
+            "question": "How many attention heads does the Transformer use?",
+            "answer": "kjsdhfkjsdhf random text"
+        }
+    ]
+    
+    for i, test in enumerate(test_cases, 1):
+        print(f"\n{'='*60}")
+        print(f"TEST CASE {i}: {test['name']}")
+        print(f"{'='*60}")
+        print(f"Question: {test['question']}")
+        print(f"Answer: {test['answer']}")
+        print()
+        
+        result = grader.grade_answer(
+            question=test['question'],
+            user_answer=test['answer'],
+            retriever=mock_retriever
+        )
+        
+        print(f"Score: {result['score']}/10")
+        print(f"Feedback: {result['feedback']}")
+        print(f"Reasoning: {result['reasoning']}")
+        print(f"Question Repetition: {result.get('is_question_repetition', False)}")
+        print(f"Contradicts Context: {result.get('contradicts_context', False)}")

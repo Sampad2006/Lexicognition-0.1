@@ -11,7 +11,7 @@ st.set_page_config(page_title="Lexicognition AI Interviewer", page_icon="🤖")
 st.title("🤖 Lexicognition AI Interviewer")
 
 pdf_path = "data/attention.pdf"
-persist_directory = "./chroma_db"
+persist_directory = "./persistent_storage/chroma_db"
 
 # Initialize components (using session state to persist across reruns)
 if 'step' not in st.session_state:
@@ -26,7 +26,7 @@ def process_document():
         if not os.path.exists(persist_directory) or not os.listdir(persist_directory):
             pipeline = PDFIngestionPipeline(chunk_size=1000, chunk_overlap=200)
             chunks = pipeline.ingest_pdf(pdf_path)
-            vsm.create_store(chunks)
+            vsm.create_vector_store(chunks)  # ✅ FIXED METHOD NAME
         return vsm.load_existing_store(k=3)
 
 # --- Main App Logic ---
@@ -34,7 +34,8 @@ retriever = process_document()
 
 if st.session_state.step == "ingestion":
     if st.button("Start Interview"):
-        gen = QuestionGenerator(model_name="llama3")
+        # ✅ FIXED: Higher temperature for variety
+        gen = QuestionGenerator(model_name="llama3", temperature=0.9)
         st.session_state.questions = gen.generate_questions(retriever, num_questions=3)
         st.session_state.step = "interview"
         st.rerun()

@@ -1,25 +1,15 @@
 """
-Lexicognition: The AI-powered PDF Interviewer
-==============================================
-This script runs an interactive interview session based on a PDF document.
+Updated main.py - Integrating Robust Question Generator & Strict Evaluator
+===========================================================================
 
-The pipeline is as follows:
-1.  **Ingestion**: If no vector store exists, it ingests a PDF document
-    (`data/attention.pdf` by default), chunks it, and creates embeddings.
-2.  **Storage**: It saves the embeddings into a ChromaDB vector store.
-3.  **Question Generation**: It uses an LLM to generate a set of conceptual
-    interview questions based on the PDF's content.
-4.  **Interview Loop**: It presents each question to the user, takes their
-    answer, and uses the `AnswerGrader` to evaluate it.
-5.  **Grading & Feedback**: The grader retrieves relevant context from the PDF,
-    compares the user's answer, and provides a score, feedback, a summary of
-    the correct answer, and the evidence it used.
+Changes from original:
+1. Uses new QuestionGenerator with JSON enforcement
+2. Uses new StrictAnswerGrader with anti-cheat logic
+3. Better error handling and logging
+4. Shows anti-cheat flags in output
 
-To run the application:
-    `python main.py`
-
-Author: AI Assistant
-Date: 2026-01-09
+Author: Senior AI Engineer
+Date: 2026-01-16
 """
 
 import os
@@ -28,114 +18,235 @@ from pathlib import Path
 
 from src.pdf_ingestion import PDFIngestionPipeline
 from src.vector_store import VectorStoreManager
-from src.question_generator import QuestionGenerator
-from src.answer_grader import AnswerGrader
+
+# ✅ IMPORT NEW MODULES
+from src.question_generator import QuestionGenerator  # Updated version
+from src.answer_grader import StrictAnswerGrader      # New strict version
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
 def main():
     """
     Main function to run the interactive PDF-based interview.
+    Now with robust JSON parsing and strict evaluation.
     """
+    print("\n" + "="*70)
+    print("  🤖 LEXICOGNITION AI INTERVIEWER - Enhanced Edition 🤖")
+    print("  • Robust JSON-based question generation")
+    print("  • Strict anti-cheat evaluation")
+    print("="*70 + "\n")
+    
     # --- 1. Configuration ---
     pdf_path = "data/attention.pdf"
-    persist_directory = "./chroma_db"
+    persist_directory = "./persistent_storage/chroma_db"
     num_questions_to_generate = 3
 
     # --- 2. Setup: Ingestion and Vector Store ---
+    logger.info("Initializing Vector Store Manager...")
     vector_store_manager = VectorStoreManager(persist_directory=persist_directory)
 
     if not os.path.exists(persist_directory) or not os.listdir(persist_directory):
         logger.info("Vector store not found. Starting ingestion process...")
         
-        # Ensure data directory and PDF exist
         if not Path(pdf_path).exists():
-            logger.error(f"Required PDF not found at {pdf_path}. Please place your PDF there.")
+            logger.error(f"Required PDF not found at {pdf_path}")
+            print(f"\n❌ Error: PDF not found at {pdf_path}")
+            print("Please place your PDF there and try again.")
             return
 
         # Ingest the PDF
         ingestion_pipeline = PDFIngestionPipeline(chunk_size=1000, chunk_overlap=200)
         chunks = ingestion_pipeline.ingest_pdf(pdf_path)
 
-        # Create and persist the vector store
+        # Create vector store
         logger.info(f"Creating vector store from {len(chunks)} chunks...")
-        vector_store_manager.create_store(chunks)
+        vector_store_manager.create_vector_store(chunks)
         logger.info("Vector store created and persisted.")
     else:
         logger.info("Existing vector store found. Loading...")
 
     # Load the retriever
     try:
-        retriever = vector_store_manager.load_existing_store(k=3) # Retrieve top 3 chunks for grading
-        logger.info("Retriever loaded successfully.")
+        retriever = vector_store_manager.load_existing_store(k=3)
+        logger.info("✓ Retriever loaded successfully")
     except Exception as e:
         logger.error(f"Failed to load vector store: {e}")
+        print(f"\n❌ Error loading vector store: {e}")
         return
 
-    # --- 3. Generate Questions ---
+    # --- 3. Generate Questions (with robust JSON parsing) ---
+    print("\n" + "─"*70)
+    print("📝 PHASE 1: Question Generation")
+    print("─"*70)
+    
     try:
-        question_generator = QuestionGenerator(model_name="llama3", temperature=0.7)
-        logger.info(f"Generating {num_questions_to_generate} interview questions...")
+        logger.info("Initializing Robust Question Generator...")
+        question_generator = QuestionGenerator(
+            model_name="llama3",
+            temperature=0.9  # High temperature for variety
+        )
+        
+        print(f"\n⏳ Generating {num_questions_to_generate} questions from your PDF...")
+        print("   (This may take 30-60 seconds)\n")
+        
         questions = question_generator.generate_questions(
             retriever=retriever,
-            num_questions=num_questions_to_generate
+            num_questions=num_questions_to_generate,
+            max_retries=3  # Retry up to 3 times if parsing fails
         )
-        logger.info("Questions generated successfully.")
+        
+        logger.info("✓ Questions generated successfully")
+        print(f"✓ Successfully generated {len(questions)} questions\n")
+        
     except Exception as e:
         logger.error(f"Failed to generate questions: {e}")
+        print(f"\n❌ Error generating questions: {e}")
+        print("\nTroubleshooting:")
+        print("1. Is Ollama running? (ollama serve)")
+        print("2. Is llama3 installed? (ollama pull llama3)")
         return
 
-    # --- 4. Interview Loop ---
-    answer_grader = AnswerGrader(model_name="llama3")
-    
-    print("\n" + "="*60)
-    print("         🤖 Welcome to the Lexicognition AI Interview 🤖")
-    print("="*60 + "\n")
-    print(f"I will ask you {len(questions)} questions about the document: '{pdf_path}'")
-    print("Let's begin!\n")
+    # --- 4. Interview Loop (with strict evaluation) ---
+    print("\n" + "="*70)
+    print("         🎯 INTERVIEW SESSION START")
+    print("="*70 + "\n")
+    print(f"I will ask you {len(questions)} questions about: '{pdf_path}'")
+    print("Answer honestly - the grader is strict and detects cheating!")
+    print("\nType 'exit' or 'quit' to end the interview early.\n")
+
+    # Initialize strict grader
+    try:
+        answer_grader = StrictAnswerGrader(
+            model_name="llama3",
+            temperature=0.0  # Deterministic grading
+        )
+        logger.info("✓ Strict grader initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize grader: {e}")
+        print(f"\n❌ Error initializing grader: {e}")
+        return
+
+    total_score = 0
+    max_possible_score = len(questions) * 10
 
     for i, question in enumerate(questions, 1):
-        print("\n" + "---"*20)
-        print(f"Question {i}/{len(questions)}: {question}")
-        print("--- "*20)
+        print("\n" + "─"*70)
+        print(f"📌 QUESTION {i}/{len(questions)}")
+        print("─"*70)
+        print(f"\n{question}\n")
+        print("─"*70)
         
         try:
-            user_answer = input("Your Answer: ")
+            user_answer = input("✍️  Your Answer: ")
         except EOFError:
-            print("\nExiting interview.")
+            print("\n\n👋 Interview ended by user.")
             break
 
         if user_answer.strip().lower() in ['exit', 'quit']:
-            print("\nExiting interview.")
+            print("\n\n👋 Interview ended by user.")
             break
 
-        # --- 5. Grade the answer and provide feedback ---
-        print("\n🔍 Evaluating your answer...")
-        grading_result = answer_grader.grade_answer(question, user_answer, retriever)
-
-        print("\n" + "---"*20)
-        print("📊 Your Grade:")
-        print(f"Score: {grading_result.get('score', 'N/A')} / 10")
-        print(f"\n💡 Feedback:\n{grading_result.get('feedback', 'No feedback available.')}")
-        print(f"\n✅ Correct Answer Summary:\n{grading_result.get('correct_answer_summary', 'Not available.')}")
+        # Grade the answer
+        print("\n⏳ Evaluating your answer with strict grading...")
         
-        print("\n" + "---"*20)
-        print("📄 Evidence from the document (Top 3 Chunks):")
+        try:
+            grading_result = answer_grader.grade_answer(
+                question=question,
+                user_answer=user_answer,
+                retriever=retriever,
+                max_retries=2
+            )
+        except Exception as e:
+            logger.error(f"Grading failed: {e}")
+            print(f"\n❌ Error during grading: {e}")
+            continue
+
+        # Display results
+        score = grading_result.get('score', 0)
+        total_score += score
+        
+        print("\n" + "="*70)
+        print("📊 GRADING RESULTS")
+        print("="*70)
+        
+        # Show score with color coding (text-based)
+        if score >= 8:
+            score_emoji = "🟢"
+        elif score >= 5:
+            score_emoji = "🟡"
+        else:
+            score_emoji = "🔴"
+        
+        print(f"\n{score_emoji} SCORE: {score}/10")
+        
+        # Show anti-cheat flags
+        if grading_result.get('is_question_repetition'):
+            print("\n⚠️  WARNING: Question repetition detected!")
+        
+        if grading_result.get('contradicts_context'):
+            print("\n⚠️  WARNING: Answer contradicts source material!")
+        
+        print(f"\n💬 FEEDBACK:")
+        print(f"   {grading_result.get('feedback', 'No feedback available.')}")
+        
+        print(f"\n🔍 REASONING:")
+        print(f"   {grading_result.get('reasoning', 'No reasoning available.')}")
+        
+        # Show evidence
+        print("\n" + "─"*70)
+        print("📄 SOURCE EVIDENCE (Top 3 Chunks)")
+        print("─"*70)
         evidence = grading_result.get('evidence', [])
         if evidence:
             for j, evi in enumerate(evidence, 1):
                 page_num = evi.get('page', 'N/A')
-                content_preview = evi.get('content', 'No content preview.').replace('\n', ' ')
-                print(f"  {j}. [Page {page_num}]: \"{content_preview}\" ")
+                content = evi.get('content', 'No content').replace('\n', ' ')
+                print(f"\n{j}. [Page {page_num}]")
+                print(f"   \"{content[:150]}...\"")
         else:
-            print("  No evidence was retrieved to grade this answer.")
-            
-    print("\n" + "="*60)
-    print("             🎉 Interview Complete! Thank you. 🎉")
-    print("="*60 + "\n")
+            print("   (No evidence retrieved)")
+        
+        print("\n" + "="*70)
+        
+        # Pause before next question (except for last question)
+        if i < len(questions):
+            input("\n\nPress Enter to continue to the next question...")
+    
+    # --- 5. Final Summary ---
+    print("\n\n" + "="*70)
+    print("             🎉 INTERVIEW COMPLETE! 🎉")
+    print("="*70)
+    
+    percentage = (total_score / max_possible_score * 100) if max_possible_score > 0 else 0
+    
+    print(f"\n📈 FINAL SCORE: {total_score}/{max_possible_score} ({percentage:.1f}%)")
+    
+    if percentage >= 80:
+        grade = "A - Excellent!"
+        emoji = "🌟"
+    elif percentage >= 70:
+        grade = "B - Good"
+        emoji = "👍"
+    elif percentage >= 60:
+        grade = "C - Satisfactory"
+        emoji = "😊"
+    elif percentage >= 50:
+        grade = "D - Needs Improvement"
+        emoji = "📚"
+    else:
+        grade = "F - Unsatisfactory"
+        emoji = "💪"
+    
+    print(f"{emoji}  GRADE: {grade}")
+    print("\n" + "="*70)
+    print("Thank you for using Lexicognition!")
+    print("="*70 + "\n")
 
 
 if __name__ == "__main__":

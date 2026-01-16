@@ -11,6 +11,7 @@ Date: 2026-01-09
 """
 
 import os
+import os
 import shutil
 from pathlib import Path
 from typing import List, Optional
@@ -67,12 +68,22 @@ class VectorStoreManager:
         
         logger.info(f"Initializing VectorStoreManager with model: {embedding_model_name}")
         
-        # Initialize HuggingFace Embeddings
-        # This model runs entirely locally - no API keys needed
+        # Define a persistent cache directory for the model
+        cache_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "persistent_storage",
+            "model_cache"
+        )
+        os.makedirs(cache_dir, exist_ok=True)
+        logger.info(f"Using persistent cache for embedding models at: {cache_dir}")
+        
+        # Initialize HuggingFace Embeddings with caching
         self.embedding_model = HuggingFaceEmbeddings(
             model_name=embedding_model_name,
+            cache_folder=cache_dir,  # ✅ KEY: Specify a persistent cache directory
             model_kwargs={'device': 'cpu'},  # Use 'cuda' if GPU
-            encode_kwargs={'normalize_embeddings': True}  # L2 normalization for cosine similarity
+            encode_kwargs={'normalize_embeddings': True}  # L2 normalization
         )
         
         logger.info("Embedding model loaded successfully")
