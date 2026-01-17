@@ -19,3 +19,15 @@ sentence-transformers==2.3.1
 # Compute - haha
 numpy==1.26.4
 scikit-learn==1.4.2
+
+# Audio Processing for Voice Input
+# Note: On macOS, you may need to install PortAudio first: brew install portaudio
+# Note: On Debian/Ubuntu, you may need to install: sudo apt-get install libportaudio2
+sounddevice==0.4.6
+scipy==1.11.2
+
+# OpenAI Whisper for Speech-to-Text
+# Note: Whisper requires ffmpeg.
+# On macOS: brew install ffmpeg
+# On Debian/Ubuntu: sudo apt-get install ffmpeg
+openai-whisper==20231117

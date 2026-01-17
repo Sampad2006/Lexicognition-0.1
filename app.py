@@ -4,7 +4,9 @@ from pathlib import Path
 from src.pdf_ingestion import PDFIngestionPipeline
 from src.vector_store import VectorStoreManager
 from src.question_generator import QuestionGenerator
-from src.answer_grader import StrictAnswerGrader  # Use the strict version
+from src.answer_grader import StrictAnswerGrader
+from src.audio_transcriber import WhisperAudioTranscriber
+
 
 # --- Setup and Configuration ---
 st.set_page_config(page_title="Lexicognition AI Interviewer", page_icon="🤖")
@@ -31,6 +33,15 @@ if 'step' not in st.session_state:
     st.session_state.current_q_idx = 0
     st.session_state.retriever = None
     st.session_state.submitted_answer = None
+    st.session_state.transcribed_text = ""
+
+# --- Transcriber Initialization ---
+@st.cache_resource
+def get_transcriber():
+    """Loads the Whisper model for audio transcription."""
+    return WhisperAudioTranscriber(model_name="base")
+
+transcriber = get_transcriber()
 
 # --- Phase 1 & 2: Ingestion & Storage ---
 @st.cache_resource
@@ -39,7 +50,6 @@ def process_document(pdf_path, persist_dir):
     with st.spinner(f"Processing '{pdf_path.name}'... This may take a moment."):
         vsm = VectorStoreManager(persist_directory=persist_dir)
         
-        # Check if the database is current, or if it needs to be created
         if not vsm.is_source_current(str(pdf_path)):
             st.info("Vector store is stale or does not exist. Re-ingesting document...")
             if vsm.database_exists():
@@ -52,7 +62,7 @@ def process_document(pdf_path, persist_dir):
         else:
             st.success("Current vector store loaded.")
             
-        return vsm.load_existing_store(k=5) # Retrieve more context for the grader
+        return vsm.load_existing_store(k=5)
 
 # --- Main App Logic ---
 if st.session_state.retriever is None:
@@ -77,11 +87,21 @@ elif st.session_state.step == "interview":
     
     st.subheader(f"Question {idx + 1} of {len(questions)}")
     st.info(questions[idx])
-    
-    user_answer = st.text_area("Your Answer:", key=f"ans_{idx}", height=150)
+
+    st.markdown("#### Answer with your voice:")
+    audio_data = st.audio_input("Click 'Record' to start, 'Stop' to finish", sample_rate=16000, key=f"audio_recorder_{idx}")
+
+    if audio_data is not None:
+        with st.spinner("Transcribing your answer..."):
+            transcribed_text = transcriber.transcribe_audio_file(audio_data.read())
+            st.session_state.transcribed_text = transcribed_text
+            # Manually update the state of the text_area widget
+            st.session_state[f"ans_{idx}"] = transcribed_text
+
+    # Let the text_area widget read its value from the session state via its key
+    user_answer = st.text_area("Your Answer (you can edit the transcribed text):", key=f"ans_{idx}", height=150)
     
     if st.button("Submit Answer", type="primary"):
-        # Explicitly save the answer before switching steps
         st.session_state.submitted_answer = st.session_state[f"ans_{idx}"]
         st.session_state.step = "grading"
         st.rerun()
@@ -118,7 +138,6 @@ elif st.session_state.step == "grading":
     with st.expander("See Detailed Reasoning and Source Evidence"):
         st.markdown(f"**🔍 Reasoning:** {result.get('reasoning', 'No reasoning available.')}")
         
-        # Show anti-cheat flags
         if result.get('is_question_repetition'):
             st.warning("⚠️ **Warning:** Question repetition was detected.")
         if result.get('contradicts_context'):
@@ -141,6 +160,7 @@ elif st.session_state.step == "grading":
         if st.button("Next Question →"):
             st.session_state.current_q_idx += 1
             st.session_state.step = "interview"
+            st.session_state.transcribed_text = "" # Clear transcribed text for next question
             st.rerun()
     else:
         st.balloons()
