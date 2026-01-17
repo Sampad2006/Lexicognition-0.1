@@ -13,6 +13,8 @@ Date: 2026-01-09
 import os
 import os
 import shutil
+import hashlib
+import json
 from pathlib import Path
 from typing import List, Optional
 import logging
@@ -23,7 +25,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.vectorstores.base import VectorStoreRetriever
 
 
-# Configure logging₹
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -88,6 +90,19 @@ class VectorStoreManager:
         
         logger.info("Embedding model loaded successfully")
     
+    def _get_source_info_path(self) -> Path:
+        """Returns the path to the source_info.json file."""
+        return Path(self.persist_directory) / "source_info.json"
+
+    def _calculate_file_hash(self, filepath: str) -> str:
+        """Calculates the SHA256 hash of a file."""
+        sha256 = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256.update(byte_block)
+        return sha256.hexdigest()
+
+    
     def database_exists(self) -> bool:
         """
         Check if the ChromaDB database already exists on disk.
@@ -106,6 +121,37 @@ class VectorStoreManager:
         
         logger.info(f"Existing database found at: {self.persist_directory}")
         return True
+    
+    def is_source_current(self, pdf_path: str) -> bool:
+        """
+        Check if the stored vector database was created from the current PDF.
+        
+        Args:
+            pdf_path: The path to the PDF file to check.
+            
+        Returns:
+            True if the source PDF matches the one in the database, False otherwise.
+        """
+        source_info_path = self._get_source_info_path()
+        if not source_info_path.exists():
+            logger.info("Source info file not found. Assuming database is stale.")
+            return False
+
+        try:
+            with open(source_info_path, "r") as f:
+                stored_info = json.load(f)
+            
+            current_hash = self._calculate_file_hash(pdf_path)
+            
+            if stored_info.get("hash") == current_hash:
+                logger.info("Source PDF matches stored hash. Database is current.")
+                return True
+            else:
+                logger.warning("Source PDF hash mismatch. Database is stale.")
+                return False
+        except (json.JSONDecodeError, FileNotFoundError, Exception) as e:
+            logger.error(f"Error checking source info: {e}. Assuming database is stale.")
+            return False
     
     def clear_database(self) -> None:
         """
@@ -130,72 +176,32 @@ class VectorStoreManager:
     def create_vector_store(
         self,
         chunks: List[Document],
-        overwrite: bool = False
+        source_pdf_path: str
     ) -> VectorStoreRetriever:
         """
-        Create or load a ChromaDB vector store and return a configured retriever.
+        Create a new ChromaDB vector store and return a configured retriever.
         
-        This is the main entry point for Phase 2:
-        1. Checks if database already exists
-        2. Creates/loads ChromaDB with embeddings
-        3. Returns a retriever for RAG queries
-        
+        This method will always create a new database from the provided chunks
+        and save a fingerprint of the source document for validation.
+
         Args:
-            chunks: List of Document objects from Phase 1 ingestion
-            overwrite: If True, delete existing database and create fresh
-                      If False (default), append to existing database
+            chunks: List of Document objects from PDF ingestion.
+            source_pdf_path: Path to the source PDF file for fingerprinting.
         
         Returns:
-            VectorStoreRetriever configured for top-k similarity search
+            VectorStoreRetriever configured for top-k similarity search.
         
         Raises:
-            ValueError: If chunks list is empty
-            Exception: For database creation/loading errors
-            
-        Example:
-            >>> manager = VectorStoreManager()
-            >>> retriever = manager.create_vector_store(chunks)
-            >>> results = retriever.get_relevant_documents("What is attention mechanism?")
+            ValueError: If chunks list is empty.
         """
         if not chunks:
             logger.error("Empty chunks list provided")
             raise ValueError("Cannot create vector store from empty document list")
         
-        logger.info(f"Processing {len(chunks)} document chunks...")
+        logger.info(f"Creating new vector store from {len(chunks)} document chunks...")
         
         try:
-            # Handle existing database
-            if self.database_exists():
-                if overwrite:
-                    logger.info("Overwrite=True: Clearing existing database")
-                    self.clear_database()
-                else:
-                    logger.info("Loading existing database and appending new documents")
-                    # Load existing database
-                    vectorstore = Chroma(
-                        persist_directory=self.persist_directory,
-                        embedding_function=self.embedding_model,
-                        collection_name=self.collection_name
-                    )
-                    
-                    # Add new chunks to existing database
-                    logger.info(f"Adding {len(chunks)} new chunks to existing database")
-                    vectorstore.add_documents(chunks)
-                    
-                    logger.info("Documents added to existing vector store")
-                    
-                    # Return configured retriever
-                    return self._create_retriever(vectorstore)
-            
-            # Create new database
-            logger.info("Creating new ChromaDB vector store...")
-            logger.info("Generating embeddings (this may take a moment)...")
-            
-            # Create ChromaDB from documents
-            # This automatically:
-            # 1. Generates embeddings for all chunks
-            # 2. Stores them in the persist_directory
-            # 3. Creates an index for fast similarity search
+            # Create new database from documents
             vectorstore = Chroma.from_documents(
                 documents=chunks,
                 embedding=self.embedding_model,
@@ -206,9 +212,16 @@ class VectorStoreManager:
             logger.info(
                 f"Vector store created successfully with {len(chunks)} documents"
             )
-            logger.info(f"Database persisted to: {self.persist_directory}")
             
-            # Return configured retriever
+            # Save the fingerprint of the source document
+            source_hash = self._calculate_file_hash(source_pdf_path)
+            source_info_path = self._get_source_info_path()
+            with open(source_info_path, "w") as f:
+                json.dump({"source": os.path.basename(source_pdf_path), "hash": source_hash}, f)
+            
+            logger.info(f"Database persisted to: {self.persist_directory}")
+            logger.info(f"Source document fingerprint saved: {source_hash}")
+            
             return self._create_retriever(vectorstore)
             
         except Exception as e:

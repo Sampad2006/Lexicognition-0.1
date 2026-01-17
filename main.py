@@ -43,7 +43,23 @@ def main():
     print("="*70 + "\n")
     
     # --- 1. Configuration ---
-    pdf_path = "data/attention.pdf"
+    data_dir = Path("data")
+    
+    # Find the most recent PDF in the data directory
+    logger.info(f"Scanning for PDFs in '{data_dir.resolve()}'...")
+    pdf_files = list(data_dir.glob("*.pdf"))
+    
+    if not pdf_files:
+        logger.error("No PDF files found in the 'data' directory.")
+        print("\n❌ Error: No PDF files found in the 'data' directory.")
+        print(f"   Please add a PDF to the '{data_dir.resolve()}' folder and try again.")
+        return
+    
+    # Get the most recently modified file
+    pdf_path = max(pdf_files, key=lambda p: p.stat().st_mtime)
+    logger.info(f"Found {len(pdf_files)} PDF(s). Using the most recent one: '{pdf_path.name}'")
+    print(f"\n📄 Using PDF: {pdf_path.name}")
+    
     persist_directory = "./persistent_storage/chroma_db"
     num_questions_to_generate = 3
 
@@ -51,25 +67,31 @@ def main():
     logger.info("Initializing Vector Store Manager...")
     vector_store_manager = VectorStoreManager(persist_directory=persist_directory)
 
-    if not os.path.exists(persist_directory) or not os.listdir(persist_directory):
-        logger.info("Vector store not found. Starting ingestion process...")
+    # Check if the PDF exists before doing anything (it should, based on above)
+    if not pdf_path.exists():
+        logger.error(f"Selected PDF not found at {pdf_path}")
+        print(f"\n❌ Error: PDF '{pdf_path.name}' not found unexpectedly.")
+        return
+
+    # Check if the database is current, or if it needs to be created
+    if not vector_store_manager.is_source_current(pdf_path):
+        logger.info("Vector store is stale or does not exist. Re-ingesting document...")
         
-        if not Path(pdf_path).exists():
-            logger.error(f"Required PDF not found at {pdf_path}")
-            print(f"\n❌ Error: PDF not found at {pdf_path}")
-            print("Please place your PDF there and try again.")
-            return
+        # Clear old database if it exists
+        if vector_store_manager.database_exists():
+            logger.info("Source PDF has changed. Clearing old vector store.")
+            vector_store_manager.clear_database()
 
         # Ingest the PDF
         ingestion_pipeline = PDFIngestionPipeline(chunk_size=1000, chunk_overlap=200)
         chunks = ingestion_pipeline.ingest_pdf(pdf_path)
 
-        # Create vector store
-        logger.info(f"Creating vector store from {len(chunks)} chunks...")
-        vector_store_manager.create_vector_store(chunks)
+        # Create vector store and save fingerprint
+        logger.info(f"Creating new vector store from {len(chunks)} chunks...")
+        vector_store_manager.create_vector_store(chunks, source_pdf_path=pdf_path)
         logger.info("Vector store created and persisted.")
     else:
-        logger.info("Existing vector store found. Loading...")
+        logger.info("Existing and current vector store found. Loading...")
 
     # Load the retriever
     try:
@@ -192,6 +214,9 @@ def main():
         if grading_result.get('contradicts_context'):
             print("\n⚠️  WARNING: Answer contradicts source material!")
         
+        if grading_result.get('is_irrelevant'):
+            print("\n⚠️  WARNING: Answer was irrelevant or nonsensical!")
+        
         print(f"\n💬 FEEDBACK:")
         print(f"   {grading_result.get('feedback', 'No feedback available.')}")
         
@@ -199,10 +224,11 @@ def main():
         print(f"   {grading_result.get('reasoning', 'No reasoning available.')}")
         
         # Show evidence
-        print("\n" + "─"*70)
-        print("📄 SOURCE EVIDENCE (Top 3 Chunks)")
-        print("─"*70)
         evidence = grading_result.get('evidence', [])
+        print("\n" + "─"*70)
+        print(f"📄 SOURCE EVIDENCE (Top {len(evidence)} Chunks)")
+        print("─"*70)
+        
         if evidence:
             for j, evi in enumerate(evidence, 1):
                 page_num = evi.get('page', 'N/A')

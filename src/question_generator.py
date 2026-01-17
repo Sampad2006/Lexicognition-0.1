@@ -71,24 +71,28 @@ class QuestionGenerator:
     ) -> List[str]:
         """
         Retrieve relevant chunks with randomization for variety.
+        This method temporarily modifies retriever's search_kwargs and
+        restores them to avoid side effects.
         """
-        # Multiple diverse query strategies
-        query_strategies = [
-            "Abstract introduction main contributions key findings",
-            "Methodology architecture design decisions implementation",
-            "Results experiments evaluation performance analysis",
-            "Conclusion future work limitations discussion",
-            "Background related work motivation problem statement",
-            "Technical details algorithms mathematical formulation",
-            "Trade-offs comparisons advantages disadvantages"
-        ]
-        
-        query = random.choice(query_strategies)
-        top_k = random.randint(4, 7)
-        
-        logger.info(f"Retrieving top {top_k} chunks with query: '{query[:50]}...'")
+        original_kwargs = retriever.search_kwargs
         
         try:
+            # Multiple diverse query strategies
+            query_strategies = [
+                "Abstract introduction main contributions key findings",
+                "Methodology architecture design decisions implementation",
+                "Results experiments evaluation performance analysis",
+                "Conclusion future work limitations discussion",
+                "Background related work motivation problem statement",
+                "Technical details algorithms mathematical formulation",
+                "Trade-offs comparisons advantages disadvantages"
+            ]
+            
+            query = random.choice(query_strategies)
+            top_k = random.randint(4, 7)
+            
+            logger.info(f"Temporarily retrieving top {top_k} chunks with query: '{query[:50]}...'")
+            
             retriever.search_kwargs = {"k": top_k}
             docs = retriever.invoke(query)
             
@@ -96,7 +100,7 @@ class QuestionGenerator:
                 logger.warning("No documents retrieved!")
                 return []
             
-            logger.info(f"✓ Retrieved {len(docs)} chunks")
+            logger.info(f"✓ Retrieved {len(docs)} chunks for question generation context")
             
             # Shuffle for variety
             random.shuffle(docs)
@@ -107,6 +111,10 @@ class QuestionGenerator:
         except Exception as e:
             logger.error(f"Error retrieving chunks: {str(e)}")
             raise
+        finally:
+            # Restore original search_kwargs to avoid side effects
+            retriever.search_kwargs = original_kwargs
+            logger.info("Retriever search_kwargs restored.")
     
     def _construct_context(self, chunks: List[str]) -> str:
         """Combine retrieved chunks into a single context string."""
@@ -136,7 +144,9 @@ You MUST output ONLY valid JSON. No markdown, no code blocks, no preamble.""")
 RESEARCH PAPER EXCERPT:
 {context}
 
-REQUIREMENTS:
+PRIMARY RULE: Your generated questions MUST NOT refer to specific section numbers, table numbers, or figure numbers (e.g., 'What is in Table 2?', 'Summarize Section 3.1', 'As shown in Figure 3...'). Questions must be answerable based on the concepts in the text alone. This is a strict requirement.
+
+OTHER REQUIREMENTS:
 1. Focus on methodology, architecture, and design decisions
 2. Ask about trade-offs and "why" questions
 3. Require deep understanding to answer
@@ -161,7 +171,7 @@ OUTPUT REQUIREMENTS:
 - The "questions" array must contain exactly {num_questions} strings
 - Each string must be a complete question ending with ?
 
-Generate the JSON now:""")
+Remember the PRIMARY RULE. Do not include references to tables, figures, or sections. Generate the JSON now:""")
         
         return [system_message, human_message]
     
@@ -295,6 +305,12 @@ Generate the JSON now:""")
             # Must contain a question mark
             if '?' not in q:
                 logger.warning(f"Question {idx+1} missing question mark")
+                continue
+
+            # ✅ NEW: Check for forbidden references
+            forbidden_patterns = r'\b(table|figure|section|fig\.?|sec\.?)\b'
+            if re.search(forbidden_patterns, q, re.IGNORECASE):
+                logger.warning(f"Question {idx+1} contains a forbidden reference and will be discarded. Content: '{q}'")
                 continue
             
             # Ensure it ends with ?
